@@ -1,7 +1,21 @@
 use super::ballot_leader_election::Ballot;
 use std::{fmt::Debug, marker::PhantomData};
+#[cfg(feature = "enable_cache")]
+use crate::cache::{CacheModel, Key, Value};
+
 /// Type of the entries stored in the log.
-pub trait Entry: Clone + Debug {}
+pub trait Entry: Clone + Debug {
+
+    #[allow(missing_docs)]
+    #[cfg(feature = "enable_cache")]
+    // fn encode(&mut self, _cache: &mut CacheModel<K: Key, V: Value>) {}
+    fn encode(&mut self) { unimplemented!() }
+
+    #[allow(missing_docs)]
+    #[cfg(feature = "enable_cache")]
+    // fn decode(&mut self, _cache: &mut CacheModel<Key, Value>) {}
+    fn decode(&mut self) { unimplemented!() }
+}
 
 impl<T> Entry for T where T: Clone + Debug {}
 

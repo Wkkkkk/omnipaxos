@@ -21,4 +21,7 @@ pub mod sequence_paxos;
 pub mod storage;
 /// A module containing helper functions and structs.
 pub mod util;
+/// A wrapper around LFU/LRU cache
+#[cfg(feature = "enable_cache")]
+pub mod cache;
 pub(crate) mod utils;
