@@ -24,4 +24,7 @@ pub mod util;
 /// A wrapper around LFU/LRU cache
 #[cfg(feature = "enable_cache")]
 pub mod cache;
+/// An example implementation
+#[cfg(feature = "enable_cache")]
+pub mod store_command;
 pub(crate) mod utils;

@@ -17,7 +17,7 @@ use hocon::Hocon;
 use slog::{debug, info, trace, warn, Logger};
 use std::{collections::Bound, fmt::Debug, marker::PhantomData, ops::RangeBounds, vec};
 #[cfg(feature = "enable_cache")]
-use crate::cache::{CacheModel, SerializableKey, SerializableValue};
+use crate::cache::CacheModel;
 
 /// Type alias for SequencePaxos Pid
 type Pid = u64;
@@ -27,7 +27,7 @@ type ConfigurationID = u32;
 /// a Sequence Paxos replica. Maintains local state of the replicated log, handles incoming messages and produces outgoing messages that the user has to fetch periodically and send using a network implementation.
 /// User also has to periodically fetch the decided entries that are guaranteed to be strongly consistent and linearizable, and therefore also safe to be used in the higher level application.
 /// If snapshots are not desired to be used, use `()` for the type parameter `S`.
-pub struct SequencePaxos<T, S, B, K: SerializableKey, V: SerializableValue>
+pub struct SequencePaxos<T, S, B>
 where
     T: Entry,
     S: Snapshot<T>,
@@ -49,10 +49,10 @@ where
     #[cfg(feature = "logging")]
     logger: Logger,
     #[cfg(feature = "enable_cache")]
-    cache: CacheModel<K, V>,
+    cache: CacheModel,
 }
 
-impl<T, S, B,  K: SerializableKey, V: SerializableValue> SequencePaxos<T, S, B, K, V>
+impl<T, S, B> SequencePaxos<T, S, B>
 where
     T: Entry,
     S: Snapshot<T>,
@@ -1431,8 +1431,7 @@ where
 
     #[cfg(feature = "enable_cache")]
     fn compress_entry(&mut self, mut entry: T) -> T {
-        // entry.encode(&mut self.cache);
-        entry.encode();
+        entry.encode(&mut self.cache);
 
         entry
     }
@@ -1446,8 +1445,7 @@ where
 
     #[cfg(feature = "enable_cache")]
     fn decompress_entry(&mut self, mut entry: T) -> T {
-        // entry.decode(&mut self.cache);
-        entry.decode();
+        entry.decode(&mut self.cache);
 
         entry
     }
@@ -1607,7 +1605,7 @@ impl SequencePaxosConfig {
         config
     }
 
-    pub fn build<T, S, B, K: SerializableKey, V: SerializableValue>(self, storage: B) -> SequencePaxos<T, S, B, K, V>
+    pub fn build<T, S, B>(self, storage: B) -> SequencePaxos<T, S, B>
     where
         T: Entry,
         S: Snapshot<T>,

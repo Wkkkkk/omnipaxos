@@ -3,53 +3,58 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use lfu_cache::LfuCache;
 use serde::ser::{Serialize, Serializer, SerializeMap};
-use serde::de::{self, Deserialize, Deserializer, Visitor, MapAccess};
+use serde::de::{Deserialize, Deserializer, Visitor, MapAccess};
 use std::fmt;
-use std::marker::PhantomData;
+use indexmap::IndexMap;
 
-#[allow(missing_docs)]
-#[typetag::serde]
-pub trait Key {} 
+/// The struct that is used in the cache as key
+/// When an entry arrives, it needs to be converted into CacheKey
+/// For SQL, this could be a string containing the extracted query template
+#[derive(Debug, serde::Serialize, serde::Deserialize, Hash, PartialEq, Eq, Clone)]
+pub struct CacheKey {
+    /// content
+    pub val: String,
+}
 
-#[allow(missing_docs)]
-pub trait SerializableKey: Key + Eq + Hash + Clone {}
+/// The struct that is used in the cache as value
+/// When an entry arrives, it needs to be converted into CacheKey
+/// For SQL, this could be a string containing the query template
+#[derive(Debug, serde::Serialize, serde::Deserialize, Hash, PartialEq, Eq, Clone)]
+pub struct CacheValue {
+    /// content
+    pub val: String,
+}
 
-#[allow(missing_docs)]
-#[typetag::serde]
-pub trait Value {}
-
-#[allow(missing_docs)]
-pub trait SerializableValue: Value + Clone {}
-
-#[allow(missing_docs)]
+/// A helper wrapper around the cache
 #[derive(Debug)]
-struct SerializableLfuCache<K: SerializableKey, V: SerializableValue> 
+struct SerializableLfuCache
 {
-    cache: LfuCache<K, V>,
+    cache: LfuCache<CacheKey, CacheValue>,
 }    
 
-#[allow(missing_docs)]
+/// A helper wrapper around the cache
 #[derive(Debug)]
-struct SerializableLruCache<K: SerializableKey, V: SerializableValue> 
+struct SerializableLruCache 
 {
-    cache: LruCache<K, V>,
+    cache: LruCache<CacheKey, CacheValue>,
 }
 
-#[allow(missing_docs)]
-#[derive(Debug, serde::Serialize)]
-pub struct CacheModel<K, V>
-where
-    K: SerializableKey,
-    V: SerializableValue,
+type IndexedCache = IndexMap<CacheKey, CacheValue>;
+
+/// The cache we use in paxos
+/// It supports operations like with(), put(key, value), get(key)
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CacheModel
 {
     use_lfu: bool,
-    lfu_cache: SerializableLfuCache<K, V>,
-    lru_cache: SerializableLruCache<K, V>,
+    lfu_cache: SerializableLfuCache,
+    lru_cache: SerializableLruCache,
+    index_cache: IndexedCache,
 }
 
-impl<K: SerializableKey, V: SerializableValue> CacheModel<K, V> 
+impl CacheModel
 {
-    #[allow(missing_docs)]
+    /// create a new cache model
     pub fn with(capacity: usize, use_lfu: bool) -> Self {
         let lfu_cache_capacity = if use_lfu { capacity } else { 1 };
         let lru_cache_capacity = if use_lfu { 1 } else { capacity };
@@ -58,28 +63,43 @@ impl<K: SerializableKey, V: SerializableValue> CacheModel<K, V>
             use_lfu,
             lfu_cache: SerializableLfuCache { cache: LfuCache::with_capacity(lfu_cache_capacity) },
             lru_cache: SerializableLruCache { cache: LruCache::new(NonZeroUsize::new(lru_cache_capacity).unwrap()) },
+            index_cache: IndexMap::with_capacity(capacity),
         }
     }
 
-    #[allow(missing_docs)]
-    pub fn put(&mut self, key: K, value: V) {
+    /// save (key, value) pair into cache
+    /// Optimization: The value could be skipped if it always equals to the key
+    pub fn put(&mut self, key: CacheKey, value: CacheValue) {
         if self.use_lfu {
-            self.lfu_cache.cache.insert(key, value);
+            self.lfu_cache.cache.insert(key.clone(), value.clone());
         } else {
-            self.lru_cache.cache.put(key, value);
+            self.lru_cache.cache.put(key.clone(), value.clone());
         }
+
+        self.index_cache.insert(key, value);
     }
 
-    #[allow(missing_docs)]
-    pub fn get(&mut self, key: K) -> Option<&V> {
+    /// get index from cache
+    pub fn get_index_of(&mut self, key: CacheKey) -> Option<usize> {
         if self.use_lfu {
-            self.lfu_cache.cache.get(&key)
+            if let Some(_value) = self.lfu_cache.cache.get(&key) {
+                return self.index_cache.get_index_of(&key)
+            }
         } else {
-            self.lru_cache.cache.get(&key)
+            if let Some(_value) = self.lru_cache.cache.get(&key) {
+                return self.index_cache.get_index_of(&key)
+            } 
         }
+
+        None
     }
 
-    #[allow(missing_docs)]
+    /// get value from cache
+    pub fn get_with_index(&mut self, index: usize) -> Option<(&CacheKey, &CacheValue)> {
+        self.index_cache.get_index(index)
+    }
+
+    /// return cache length
     pub fn len(&self) -> usize {
         if self.use_lfu {
             self.lfu_cache.cache.len()
@@ -89,7 +109,8 @@ impl<K: SerializableKey, V: SerializableValue> CacheModel<K, V>
     }
 }
 
-impl<K: SerializableKey, V: SerializableValue> Serialize for SerializableLfuCache<K, V> 
+/// Serialization functions
+impl Serialize for SerializableLfuCache
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -103,7 +124,7 @@ impl<K: SerializableKey, V: SerializableValue> Serialize for SerializableLfuCach
     }
 }
 
-impl<K: SerializableKey, V: SerializableValue> Serialize for SerializableLruCache<K, V> 
+impl Serialize for SerializableLruCache
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -118,33 +139,17 @@ impl<K: SerializableKey, V: SerializableValue> Serialize for SerializableLruCach
 }
 
 /// Deserialization functions
-struct LfuCacheVisitor<K: SerializableKey, V: SerializableValue> 
-{
-    marker: PhantomData<fn() -> SerializableLfuCache<K, V>>
-}
-
-impl<K: SerializableKey, V: SerializableValue> LfuCacheVisitor<K, V>
-{
-    fn new() -> Self {
-        LfuCacheVisitor {
-            marker: PhantomData
-        }
-    }
-}
-
-impl<'de, K: SerializableKey, V: SerializableValue> Visitor<'de> for LfuCacheVisitor<K, V>
+struct LfuCacheVisitor {}
+impl<'de> Visitor<'de> for LfuCacheVisitor
 {
     // The type that our Visitor is going to produce.
-    type Value = SerializableLfuCache<K, V>;
+    type Value = SerializableLfuCache;
 
     // Format a message stating what data this Visitor expects to receive.
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("expects lfu cache")
     }
 
-    // Deserialize MyMap from an abstract "map" provided by the
-    // Deserializer. The MapAccess input is a callback provided by
-    // the Deserializer to let us see each entry in the map.
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
     where
         M: MapAccess<'de>,
@@ -163,42 +168,26 @@ impl<'de, K: SerializableKey, V: SerializableValue> Visitor<'de> for LfuCacheVis
     }
 }
 
-impl<'de, K: SerializableKey, V: SerializableValue> Deserialize<'de> for SerializableLfuCache<K, V> 
+impl<'de> Deserialize<'de> for SerializableLfuCache
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_map(LfuCacheVisitor::new())
+        deserializer.deserialize_map(LfuCacheVisitor {})
     }
 }
-struct LruCacheVisitor<K: SerializableKey, V: SerializableValue> 
-{
-    marker: PhantomData<fn() -> SerializableLruCache<K, V>>
-}
-
-impl<K: SerializableKey, V: SerializableValue> LruCacheVisitor<K, V>
-{
-    fn new() -> Self {
-        LruCacheVisitor {
-            marker: PhantomData
-        }
-    }
-}
-
-impl<'de, K: SerializableKey, V: SerializableValue> Visitor<'de> for LruCacheVisitor<K, V>
+struct LruCacheVisitor {}
+impl<'de> Visitor<'de> for LruCacheVisitor
 {
     // The type that our Visitor is going to produce.
-    type Value = SerializableLruCache<K, V>;
+    type Value = SerializableLruCache;
 
     // Format a message stating what data this Visitor expects to receive.
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("expects lru cache")
     }
 
-    // Deserialize MyMap from an abstract "map" provided by the
-    // Deserializer. The MapAccess input is a callback provided by
-    // the Deserializer to let us see each entry in the map.
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
     where
         M: MapAccess<'de>,
@@ -217,111 +206,12 @@ impl<'de, K: SerializableKey, V: SerializableValue> Visitor<'de> for LruCacheVis
     }
 }
 
-impl<'de, K: SerializableKey, V: SerializableValue> Deserialize<'de> for SerializableLruCache<K, V> 
+impl<'de> Deserialize<'de> for SerializableLruCache
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_map(LruCacheVisitor::new())
-    }
-}
-
-impl<'de, K: SerializableKey, V: SerializableValue> Deserialize<'de> for CacheModel<K, V> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        enum Field { UseLfu, LfuCache, LruCache }
-
-        impl<'de> Deserialize<'de> for Field {
-            fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                struct FieldVisitor;
-
-                impl<'de> Visitor<'de> for FieldVisitor {
-                    type Value = Field;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("`use_lfu` or `lfu_cache` or 'lru_cache'")
-                    }
-
-                    fn visit_str<E>(self, value: &str) -> Result<Field, E>
-                    where
-                        E: de::Error,
-                    {
-                        match value {
-                            "use_lfu" => Ok(Field::UseLfu),
-                            "lfu_cache" => Ok(Field::LfuCache),
-                            "lru_cache" => Ok(Field::LruCache),
-                            _ => Err(de::Error::unknown_field(value, FIELDS)),
-                        }
-                    }
-                }
-
-                deserializer.deserialize_identifier(FieldVisitor)
-            }
-        }
-
-        struct DurationVisitor<K: SerializableKey, V: SerializableValue>  {
-            marker: PhantomData<fn() -> CacheModel<K, V>>
-        }
-
-        impl<K: SerializableKey, V: SerializableValue> DurationVisitor<K, V>
-        {
-            fn new() -> Self {
-                DurationVisitor {
-                    marker: PhantomData
-                }
-            }
-        }
-        
-        impl<'de, K: SerializableKey, V: SerializableValue> Visitor<'de> for DurationVisitor<K, V> {
-            type Value = CacheModel<K, V>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct CacheModel")
-            }
-
-            fn visit_map<S>(self, mut map: S) -> Result<Self::Value, S::Error>
-            where
-                S: MapAccess<'de>,
-            {
-                let mut use_lfu:Option<bool> = None;
-                let mut lfu_cache:Option<SerializableLfuCache<K, V>> = None;
-                let mut lru_cache:Option<SerializableLruCache<K, V>> = None;
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::UseLfu => {
-                            if use_lfu.is_some() {
-                                return Err(de::Error::duplicate_field("use_lfu"));
-                            }
-                            use_lfu = Some(map.next_value()?);
-                        }
-                        Field::LfuCache => {
-                            if lfu_cache.is_some() {
-                                return Err(de::Error::duplicate_field("lfu_cache"));
-                            }
-                            lfu_cache = Some(map.next_value()?);
-                        }
-                        Field::LruCache => {
-                            if lru_cache.is_some() {
-                                return Err(de::Error::duplicate_field("lru_cache"));
-                            }
-                            lru_cache = Some(map.next_value()?);
-                        }
-                    }
-                }
-                let use_lfu = use_lfu.ok_or_else(|| de::Error::missing_field("lru_cache"))?;
-                let lfu_cache = lfu_cache.ok_or_else(|| de::Error::missing_field("lfu_cache"))?;
-                let lru_cache = lru_cache.ok_or_else(|| de::Error::missing_field("lru_cache"))?;
-                Ok(CacheModel {use_lfu, lfu_cache, lru_cache})
-            }
-        }
-
-        const FIELDS: &'static [&'static str] = &["use_lfu", "lfu_cache", "lru_cache"];
-        deserializer.deserialize_struct("CacheModel", FIELDS, DurationVisitor::new())
+        deserializer.deserialize_map(LruCacheVisitor {})
     }
 }

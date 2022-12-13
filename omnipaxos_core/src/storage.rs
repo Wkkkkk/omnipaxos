@@ -1,23 +1,23 @@
 use super::ballot_leader_election::Ballot;
 use std::{fmt::Debug, marker::PhantomData};
 #[cfg(feature = "enable_cache")]
-use crate::cache::{CacheModel, Key, Value};
+use crate::cache::CacheModel;
 
 /// Type of the entries stored in the log.
 pub trait Entry: Clone + Debug {
-
-    #[allow(missing_docs)]
+    /// To encode an entry with the cache, we need to implement this method
+    /// An entry needs to be converted into CacheKey before saved into the cache
     #[cfg(feature = "enable_cache")]
-    // fn encode(&mut self, _cache: &mut CacheModel<K: Key, V: Value>) {}
-    fn encode(&mut self) { unimplemented!() }
+    fn encode(&mut self, _cache: &mut CacheModel) { unimplemented!() }
 
-    #[allow(missing_docs)]
+    /// To decode an entry with the cache, we need to implement this method
+    /// We need to retrive the CacheValue and then convert it into an entry
     #[cfg(feature = "enable_cache")]
-    // fn decode(&mut self, _cache: &mut CacheModel<Key, Value>) {}
-    fn decode(&mut self) { unimplemented!() }
+    fn decode(&mut self, _cache: &mut CacheModel) { unimplemented!() }
 }
 
-impl<T> Entry for T where T: Clone + Debug {}
+/// This needs to be commented out if we are using StoreCommand
+// impl<T> Entry for T where T: Clone + Debug {}
 
 /// A StopSign entry that marks the end of a configuration. Used for reconfiguration.
 #[derive(Clone, Debug)]
